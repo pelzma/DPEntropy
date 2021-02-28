@@ -1,0 +1,306 @@
+---
+title: "KRMP"
+author: "Matt Pelz"
+date: "January 26, 2019"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(BoolNet)
+library(reshape2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(data.table)
+library(ggplot2)
+library(purrr)
+library(poisson)
+library(poweRlaw)
+library(actuar)
+library(VGAM)
+library(permute)
+library(svglite)
+```
+
+network initiation
+```{r}
+n <- 100
+avgK <- 2
+k <- avgK
+z <- 50
+# initiate 'summaryTable'which will store results vectors for each z
+summaryTable <- data.frame(matrix(nrow = (n + 1)))
+summaryTable[1] <- c(0:n)
+outlinksTable <- data.frame(matrix(nrow = n))
+outlinksTable[1] <- c(0:(n-1))
+inlinksTable <- data.frame(matrix(nrow = n))
+inlinksTable[1] <- c(0:(n-1))
+# initiate plkValues to track mean(k) for power law distributions
+plkValues <- vector(mode="double", length=z)
+```
+
+```{r}
+# begin loop to run code z times
+for (i in 1:z){
+
+#manual definition of k
+#k <- c(1,2,2)
+
+#choose k from discrete uniform distribution
+#k <- rdunif(n, 1, avgK*2)
+
+#choose k from poission distribution
+#k <- rztpois(n, avgK)
+
+#choose k from power law distribution
+r <- 1.6
+s <- 11
+k <- rtruncpareto(n, 1, s, r) %>% round()
+plkValues[i] <- mean(k)
+  
+# generate network using 'BoolNet' R package
+network <- generateRandomNKNetwork(n, k,topology = c("fixed"))
+
+#store network 'interactions' in data table
+interactions <- as.data.table(network$interactions)
+
+# initiate 'totalEntropies' which will store network entropy values after each reduction
+totalEntropies <- data.frame(matrix(nrow = (n + 1), ncol=3))
+colnames(totalEntropies) <- c("reductions", "knockedOutNode", "networkEntropy")
+totalEntropies$reductions <- c(0:n)
+
+# extract functions from 'interactions' as stacked vector of outputs '0' or '1'. outputs will correspond to ordered truth table combinations
+functions <- as.matrix(interactions[2])[1,] %>% stack()
+# extract inputs from 'interactions' as stacked vector of inputs between 1 and n
+inputs <- as.matrix(interactions[1])[1,] %>% stack() %>% add_column(sequence(k), .before = 1)
+# convert node labels to numeric vector and add vector to inputs data frame
+temp <- gsub("Gene", "", inputs$ind) %>% as.numeric() %>% as.vector()
+tempValues <- sample(temp, length(temp), replace = FALSE, prob = NULL)
+tempDF <- cbind(temp, tempValues) %>% as.data.frame()
+
+
+tempDF$dup <- duplicated(tempDF) %>% as.vector()
+dups <- filter(tempDF, tempDF$dup == TRUE | tempDF$temp == 1 | tempDF$temp == 2)
+
+#begin loop to remove duplicates
+repeat{
+    dups$tempValues <- sample(dups$tempValues, length(dups$tempValues),
+    replace = FALSE, prob = NULL)
+    dups <- dups[,1:2]
+    tempDF <- tempDF[,1:2]
+    tempDF <- filter(tempDF, tempDF$temp != 1)
+    tempDF <- filter(tempDF, tempDF$temp != 2)
+    tempFix <- rbind(unique(tempDF), dups)
+  if(anyDuplicated(tempFix) == 0){
+    break
+  }
+}
+
+tempFix <- tempFix[order(tempFix[,1]),]
+inputs <- add_column(inputs, tempFix$temp, .before = 1)
+inputs$values <- tempFix$tempValues
+inputStore <- inputs
+# create data frames with input values 0 and 1
+inputZeroes <- data.frame(inputs, 0)
+names(inputZeroes)[1]<-"node"
+names(inputZeroes)[2]<-"inputIndex"
+names(inputZeroes)[3]<-"inputNode"
+names(inputZeroes)[5]<-"inputValue"
+inputOnes <- data.frame(inputs, 1)
+names(inputOnes)[1]<-"node"
+names(inputOnes)[2]<-"inputIndex"
+names(inputOnes)[3]<-"inputNode"
+names(inputOnes)[5]<-"inputValue"
+# merge inputZeroes and inputOnes to create new inputs
+inputs <- rbind(inputZeroes, inputOnes)
+inputs <- inputs[order(inputs[,1]),]
+inputs <- inputs[(-4)]
+
+truthtables <- lapply(k, function(k) expand.grid(rep(list(0:1),times=k))) %>% plyr::rbind.fill()
+truthtables <- add_column(truthtables, rep(1:n, 2^k), .before = 1)
+names(truthtables)[1]<-"node"
+
+# define functions. Choose from one of the functions below and uncomment
+
+# 75% threshold function: add all inputs, divide by two, add 0.5, and take floor value
+# truthtables$output <- rowMeans(truthtables[, -1], na.rm = TRUE)
+# truthtables$output <- floor(truthtables$output + 0.25)
+
+#50% threshold function: add all inputs, divide by two, add 0.5, and take floor value
+truthtables$output <- rowMeans(truthtables[, -1], na.rm = TRUE)
+truthtables$output <- floor(truthtables$output + 0.5)
+
+# 25% threshold function: add all inputs, divide by two, add 0.5, and take floor value
+# truthtables$output <- rowMeans(truthtables[, -1], na.rm = TRUE)
+# truthtables$output <- floor(truthtables$output + 0.75)
+
+# # Canalyzing function depth 1
+# truthtables$output <- truthtables$Var1
+# numZeroes <- length(truthtables$output[truthtables$output==0])
+# truthtables$output[truthtables$output==0] <- rbinom(numZeroes, size = 1, prob=0.5)
+# 
+# # Canalyzing function depth 2
+# truthtables$output <- pmax(truthtables$Var1, truthtables$Var2, na.rm=TRUE)
+# numZeroes <- length(truthtables$output[truthtables$output==0])
+# truthtables$output[truthtables$output==0] <- rbinom(numZeroes, size = 1, prob=0.5)
+# 
+# Canalyzing function depth 3
+# truthtables$output <- pmax(truthtables$Var1, truthtables$Var2, truthtables$Var3, na.rm=TRUE)
+# numZeroes <- length(truthtables$output[truthtables$output==0])
+# truthtables$output[truthtables$output==0] <- rbinom(numZeroes, size = 1, prob=0.5)
+# 
+# # Canalyzing function depth 4
+# truthtables$output <- pmax(truthtables$Var1, truthtables$Var2, truthtables$Var3, truthtables$Var4, na.rm=TRUE)
+# numZeroes <- length(truthtables$output[truthtables$output==0])
+# truthtables$output[truthtables$output==0] <- rbinom(numZeroes, size = 1, prob=0.5)
+
+# # Canalyzing function depth 5
+# truthtables$output <- pmax(truthtables$Var1, truthtables$Var2, truthtables$Var3, truthtables$Var4, truthtables$Var5, na.rm=TRUE)
+# numZeroes <- length(truthtables$output[truthtables$output==0])
+# truthtables$output[truthtables$output==0] <- rbinom(numZeroes, size = 1, prob=0.5)
+
+# calculate entropies for each node in a dataframe 'attributes'
+# first, find the mean of all outputs values for each node. This equates to the probability that the output is 1.
+attributes <- aggregate(truthtables$output, list(truthtables$node), mean)
+colnames(attributes) <- c("node", "probOfOne")
+
+# next, use formula for entropy to calculate entropy for each node: -(p(x=1)log2(p(x=1))-(p(x=0)log2(p(x=0))
+attributes$nodeEntropy <- -(attributes$probOfOne)*log2(attributes$probOfOne)-((1-attributes$probOfOne)*log2(1-attributes$probOfOne))
+attributes$nodeEntropy <- gsub("NaN", 0, attributes$nodeEntropy) %>% as.numeric()
+
+# add all node entropies to find total network entropy and store result as first value of 'totalEntropies' dataframe
+#attributes$nodeEntropy <- gsub("NaN", 0, attributes$nodeEntropy) %>% as.numeric()
+#attributes$networkEntropy <- sum(attributes$nodeEntropy)
+#totalEntropies[1,3] <- sum(attributes$nodeEntropy)
+
+# begin process of calculating DP values
+# first, reorganize truthtables to allow for easier calculations
+meltTables <- melt(truthtables, id=c("node", "output"))
+meltTables$variable <- gsub("Var", "", meltTables$variable) %>% as.numeric()
+names(meltTables)[3]<-"inputIndex"
+names(meltTables)[4]<-"inputValue"
+meltTables <- merge(meltTables, inputs, by=c("node", "inputIndex", "inputValue"))
+meltTables <- meltTables[order(meltTables[,1]),]
+
+# next, take mean outputs for each combination of nodes and inputs. this equates to the conditional probabilities of 1.
+probTables <- aggregate(meltTables$output, list(meltTables$node, meltTables$inputValue, meltTables$inputIndex), mean)
+colnames(probTables) <- c("node", "inputValue", "inputIndex", "probOutputOne")
+probTables <- probTables[order(probTables[,1]),]
+
+# next, add these values to the 'inputs' table and calculate the entropy for each condition. stored in column 'marginal entropy', a term I may have made up and which may be nonsense.
+inputs <- merge(inputs, probTables)
+inputs$marginalEntropy <- -(inputs$probOutputOne)*log2(inputs$probOutputOne)-((1-inputs$probOutputOne)*log2(1-inputs$probOutputOne))
+inputs$marginalEntropy <- gsub("NaN", 0, inputs$marginalEntropy) %>% as.numeric()
+
+# calculate conditional entropy for each combination of node and input by finding mean of the 'marginal entropy' values for each node-input combination.
+mutualInf <- aggregate(inputs$marginalEntropy, list(inputs$node, inputs$inputIndex, inputs$inputNode), mean)
+colnames(mutualInf) <- c("node", "inputIndex", "inputNode", "conditionalEntropy")
+mutualInf <- attributes %>% select(c("node", "nodeEntropy")) %>% merge(mutualInf, by="node")
+attributes$networkEntropy <- sum(mutualInf$conditionalEntropy)
+totalEntropies[1,3] <- sum(mutualInf$conditionalEntropy)
+totalEntropies[1,4] <- 1
+
+# calculate mutual information by subtracting conditional entropy from node entropy for each node-input combination
+mutualInf$mutualInformation <- mutualInf$nodeEntropy - mutualInf$conditionalEntropy    
+
+# calculate dp and outlinks
+# calculate DP by summing mutual information by input node
+nodes <- data.frame(c(1:n))
+colnames(nodes) <- c("node")
+dp <- aggregate(mutualInf$mutualInformation, list(mutualInf$inputNode), sum)
+colnames(dp) <- c("node", "dp")
+
+# calculate outlinks by counting times a node appears in inputNode column
+ol <- as.data.frame(table(mutualInf$inputNode))
+colnames(ol) <- c("node", "ol")
+dp <- merge(nodes, dp, by="node", all=TRUE) %>% merge(ol, by ="node", all=TRUE)
+dp[is.na(dp)] <- 0
+
+# add DP and outlinks values to 'attributes' dataframe
+attributes$determinativePower <- dp$dp
+attributes$outlinks <- dp$ol
+outlinksTable < paste(outlinksTable, attributes$outlinks)
+
+# order nodes in 'attributes' by DP in ascending order
+#attributes <- attributes[order(attributes[,5]),]
+
+# add rank index for DP values so that node 1 has lowest DP
+attributes$dpRank <- c(1:n)
+
+# merge 'attributes' with 'meltTables' and order to facilitate network reduction process. Order resulting 'reductTable' dataframe by dpRank
+totalEntropies$knockedOutNode <- c("NA", attributes$node)
+reductTable <- merge(meltTables, attributes, by="node") %>% select(11, 1, 9, 10, 6:7, 2:5, 8)
+reductTable <- reductTable[order(reductTable[,1]),]
+
+# begin network reduction loop
+# begin with node with dpRank j = 1 and proceed to n. 
+for( j in 1:n )
+{
+# isolate nodes with dpRank = j
+alpha <- filter(reductTable, dpRank == 1)
+
+# store node number as 'alpha'
+alpha <- alpha[1,2]
+
+# wherever an input node is 'alpha' and an input value is 1, set output to NA
+reductTable <- within.data.frame(reductTable, output[inputNode == alpha & inputValue == 1] <- NA)
+
+# wherever an node is 'alpha', set output to 0
+reductTable <- within.data.frame(reductTable, output[node == alpha] <- 0)
+
+# calculate node entropies for reduced network
+reductAttributes <- aggregate(reductTable$output, list(reductTable$node, reductTable$inputValue, reductTable$inputIndex), mean)
+colnames(reductAttributes) <- c("node", "inputValue", "inputIndex", "probOutputOne")
+reductAttributes[is.na(reductAttributes)] <- 0
+reductAttributes <- reductAttributes[order(reductAttributes[,1]),]
+reductAttributes$marginalEntropy <- -(reductAttributes$probOutputOne)*log2(reductAttributes$probOutputOne)-((1-reductAttributes$probOutputOne)*log2(1-reductAttributes$probOutputOne))
+reductAttributes$marginalEntropy <- gsub("NaN", 0, reductAttributes$marginalEntropy) %>% as.numeric()
+reductAttributes[is.na(reductAttributes)] <- 0
+conditionalEntropies <- aggregate(reductAttributes$marginalEntropy, list(reductAttributes$node, reductAttributes$inputIndex), mean)
+colnames(conditionalEntropies) <- c("node", "inputIndex", "conditionalEntropy")
+conditionalEntropies[is.na(conditionalEntropies)] <- 0
+conditionalEntropies <- conditionalEntropies[order(conditionalEntropies[,1]),]
+
+# calculate total network entropy and store in 'totalEntropies'
+totalEntropies[(j+1),3] <- sum(conditionalEntropies$conditionalEntropy)
+
+# calculate each totalEntropies value as a percentage of the original network entropy
+totalEntropies[(j+1),4] <- totalEntropies[(j+1),3]/totalEntropies[(1),3]
+}
+
+# add 'entropyRatio' vector as a column to 'summaryTable'
+summaryTable <- cbind(summaryTable, totalEntropies$V4)
+outlinksTable <- cbind(outlinksTable, attributes$outlinks)
+inlinksTable <- cbind(inlinksTable, k)
+
+}
+summaryTable <- summaryTable[-1]
+meanValues <- rowMeans(summaryTable)
+curve <- cbind(c(0:n), meanValues) %>% as.data.frame()
+colnames(curve) <- c("Reductions", "values")
+entropyPlot <- ggplot(curve, aes(Reductions, values)) + geom_line() + labs(x = "Node Reductions", y = "Ratio of Entropy of Parent Network") + theme(axis.text=element_text(size=20), axis.title=element_text(size=22))
+ggsave("entropyPlot.png")
+ggsave("entropyPlot.svg")
+
+outlinksTable <- outlinksTable[-1]
+outlinksVector <- as.vector(unlist(outlinksTable)) %>% as.numeric()
+outlinksDist <- ggplot() + aes(outlinksVector) + geom_histogram() + labs(x = "Distribution of Out Degree", y = "Count (All Network Iterations Included)") + scale_x_discrete(name ="Distribution of Out Degree", limits=c("1","2","3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"))
+ggsave("outlinksDist.png")
+ggsave("outlinksDist.svg")
+
+inlinksTable <- inlinksTable[-1]
+inlinksVector <- as.vector(unlist(inlinksTable)) %>% as.numeric()
+inlinksDist <- ggplot() + aes(inlinksVector)+ geom_histogram() + labs(x = "Distribution of In Degree", y = "Count (All Network Iterations Included)") + scale_x_discrete(name ="Distribution of In Degree", limits=c("1","2","3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"))
+ggsave("inlinksDist.png")
+ggsave("inlinksDist.svg")
+
+write.csv(summaryTable, "summaryTable.csv")
+write.csv(curve, "meansTable.csv")
+write.csv(outlinksTable, "outlinksTable.csv")
+write.csv(inlinksTable, "inlinksTable.csv")
+```
+
