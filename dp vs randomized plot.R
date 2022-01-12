@@ -9,7 +9,7 @@ marginPlot <- ggplot(margin, aes(NodeReductions, EntropyRatioDifference)) +
   theme(legend.text=element_text(size=14)) + 
   theme(legend.title=element_text(size=16))
 ggsave("marginPlot.png", width = 25, height = 20, units = "cm")
-ggsave("marginPlot.pdf", width = 25, height = 20, units = "cm")
+ggsave("dartsandfarts.pdf", width = 25, height = 20, units = "cm")
 
 margin2 <- full_join(dp, control, by="X1", "redux")
 colnames(margin2) <- c("X1", "redux.x", "Reduction by DP", "redux.y", "Random reduction")
